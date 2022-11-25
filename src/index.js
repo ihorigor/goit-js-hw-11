@@ -1,68 +1,108 @@
-import { fetchCountries } from './fetchCountries';
-import './css/styles.css';
-import debounce from 'lodash.debounce';
-import Notiflix from 'notiflix';
+import { PixabayApiService } from './componens-js/api-service';
+import { refs } from './componens-js/refs';
+import { smoothScroll } from './componens-js/smooth-scroll';
+import { spinerPlay, spinerStop } from './componens-js/spiner';
+import { imagesTpl } from './componens-js/create-markup';
+import { lightbox } from './componens-js/simplelightbox';
+import { Notify } from 'notiflix/build/notiflix-notify-aio';
 
-const DEBOUNCE_DELAY = 300;
+refs.searchForm.addEventListener('submit', onFormSubmit);
+refs.loadMoreBtn.addEventListener('click', onLoadMore);
 
-const refs = {
-  countryInput: document.querySelector('#search-box'),
-  countryList: document.querySelector('.country-list'),
-  countryInfo: document.querySelector('.country-info'),
-};
+const imgApi = new PixabayApiService();
+infiniteScroll();
 
-refs.countryInput.addEventListener('input', debounce(onSearch, DEBOUNCE_DELAY));
+async function onFormSubmit(event) {
+  event.preventDefault();
+  clearImagesContainer();
 
-function onSearch(e) {
-  e.preventDefault();
-  const name = e.target.value.trim();
-  refs.countryList.innerHTML = '';
-  refs.countryInfo.innerHTML = '';
+  const {
+    elements: { searchQuery },
+  } = event.currentTarget;
+  imgApi.query = searchQuery.value.trim().toLowerCase();
 
-  fetchCountries(name)
-    .then(countries => {
-      if (countries.length > 10) {
-        return Notiflix.Notify.info(
-          'Too many matches found. Please enter a more specific name.'
-        );
-      } else {
-        renderCountryList(countries);
-      }
-    })
-    .catch(error =>
-      Notiflix.Notify.failure('Oops, there is no country with that name')
-    );
+  if (!imgApi.query) {
+    Notify.failure('Sorry, enter a valid query. Please try again.');
+    return;
+  }
+
+  refs.loadMoreBtn.classList.remove('is-hidden');
+  await onLoadMore();
 }
 
-function renderCountryList(countries) {
-  const markup = countries
-    .map(({ name, flags }) => {
-      return `
-            <li class = "list__item">
-            <img class = "list__img" src="${flags.svg}" alt="Flag of ${name.official}" width="300" hight="200">
-            <p class = "list__name">${name.official}</p>
-            </li>
-        `;
-    })
-    .join('');
-  refs.countryList.innerHTML = markup;
+async function onLoadMore() {
+  try {
+    spinerPlay();
+    const { totalHits, hits } = await imgApi.fetchImages();
+    imgApi.calculateTotalPages(totalHits);
+    const markup = imagesTpl(hits);
+    refs.imagesContainer.insertAdjacentHTML('beforeend', markup);
+    lightbox.refresh();
+    smoothScroll();
 
-  if (countries.length === 1) {
-    renderCountryInfo(countries);
+    if (hits.length === 0) {
+      Notify.failure(
+        'Sorry, there are no images matching your search query. Please try again.'
+      );
+      refs.loadMoreBtn.classList.add('is-hidden');
+      return;
+    }
+
+    if (imgApi.page === 2) {
+      Notify.success(`Hooray! We found ${totalHits} images.`);
+    }
+
+    if (imgApi.isShowLoadMore) {
+      Notify.info("We're sorry, but you've reached the end of search results.");
+      refs.loadMoreBtn.classList.add('is-hidden');
+    }
+  } catch (error) {
+    onFetchError(error);
+  } finally {
+    spinerStop();
   }
 }
 
-function renderCountryInfo(countries) {
-  const markup = countries
-    .map(({ capital, population, languages }) => {
-      return `
-            <li>
-              <p><b>Capital</b>: ${capital}</p>
-              <p><b>Population</b>: ${population}</p>
-              <p><b>Languages</b>: ${Object.values(languages)}</p>
-            </li>
-        `;
-    })
-    .join('');
-  refs.countryInfo.innerHTML = markup;
+function infiniteScroll() {
+  const options = {
+    root: null,
+    rootMargin: '100px',
+    threshold: 1.0,
+  };
+
+  const callback = async function (entries, observer) {
+    entries.forEach(async entry => {
+      if (entry.isIntersecting) {
+        observer.unobserve(entry.target);
+
+        try {
+          const { totalHits, hits } = await imgApi.fetchImages();
+          const markup = imagesTpl(hits);
+          refs.imagesContainer.insertAdjacentHTML('beforeend', markup);
+          lightbox.refresh();
+          smoothScroll();
+          Notify.success(`Hooray! We found ${totalHits} images.`);
+          if (!imgApi.isShowLoadMore) {
+            const target = document.querySelector('.photo-card:last-child');
+            io.observe(target);
+          }
+        } catch (error) {
+          Notify.failure(error.message, 'Something went wrong!');
+          onFetchError(error);
+        }
+      }
+    });
+  };
+  const io = new IntersectionObserver(callback, options);
+}
+
+function clearImagesContainer() {
+  imgApi.resetPage();
+  refs.imagesContainer.innerHTML = '';
+  refs.loadMoreBtn.classList.add('is-hidden');
+}
+
+function onFetchError(error) {
+  Notify.failure(error.message);
+  clearImagesContainer();
 }
